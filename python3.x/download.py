@@ -1,3 +1,5 @@
+# vim: set noexpandtab tabstop=4 shiftwidth=4
+
 import sys
 import urllib.request
 import os
@@ -21,9 +23,10 @@ class lecHTMLParser(HTMLParser):
 	def handle_starttag(self, tag, attrs):
 		if(tag == 'a'):
 			flag = 0
+			print(attrs)
 			for (key,value) in attrs:
-				if(value == 'bullet medialink' and key == 'class'):
-					flag =1
+				if(value == 'Download file' and key == 'aria-label'):
+					flag = 1
 				if(key == 'href' and flag == 1):
 					print("Lecture Link : ",value)
 					lec_name = findName(value)
@@ -58,12 +61,21 @@ lec_html = f.read()
 lecLinkParser.feed(str(lec_html))
 lecLinkParser.close()
 
+print(lec_url_list)
+lec_url_list = ["/courses/14-01sc-principles-of-microeconomics-fall-2011/resources/lecture-videos/"]
+print(lec_url_list)
+print(video_url_list)
+print(vid_name_list)
+
 for lec_url in lec_url_list:
 	response = urllib.request.urlopen(base_url + lec_url)
 	html = response.read()
 	videoParser = vidHTMLParser()
 	videoParser.feed(str(html))
 	videoParser.close()
+
+print(video_url_list)
+print(vid_name_list)
 
 def download_video(vid_args):
 	vid_url = vid_args[0]
@@ -76,6 +88,6 @@ def download_video(vid_args):
 	else :
 		urllib.request.urlretrieve(vid_url, filename.name)
 
-pool = multiprocessing.Pool(processes=10) #use 10 processes for fast downloading, IO takes time 
-output = pool.map(download_video,zip(video_url_list,vid_name_list,list(range(1,len(video_url_list)+1)))) 
-print ("Done.") 
+pool = multiprocessing.Pool(processes=10) #use 10 processes for fast downloading, IO takes time
+output = pool.map(download_video,zip(video_url_list,vid_name_list,list(range(1,len(video_url_list)+1))))
+print ("Done.")
