@@ -2,7 +2,7 @@
 description = "RealWorld spec in the PureScript Halogen framework";
 
 inputs = {
-  nixpkgs.url = "github:nixos/nixpkgs/nixos-21.11";
+  nixpkgs.url = "github:nixos/nixpkgs/master";
   easy-purescript-nix = {
     url = "github:justinwoo/easy-purescript-nix";
     flake = false;
@@ -35,7 +35,7 @@ outputs = { self, nixpkgs, easy-purescript-nix, ... }@inputs:
       pkgs.mkShell {
         inherit name;
         buildInputs = (with pkgs; [
-          nodejs-16_x
+          nodejs-18_x
           nixpkgs-fmt
         ]) ++ (with easy-ps; [
           purs
@@ -50,3 +50,4 @@ outputs = { self, nixpkgs, easy-purescript-nix, ... }@inputs:
           ]));
       });
   };
+}

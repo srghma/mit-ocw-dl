@@ -1,68 +1,116 @@
 #!/usr/bin/env node
-// ./download-course.js https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011/ 
+// ./download-course.js https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011 /home/srghma/Desktop/14-01sc-principles-of-microeconomics-fall-2011/
+// ./download-course.js https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011/download /home/srghma/Desktop/14-01sc-principles-of-microeconomics-fall-2011/
 
-const fs = require('fs').promises;
-const path = require('path');
-const { exec } = require('child_process');
-const { promisify } = require('util');
-// const rra = require('recursive-readdir-async')
+import axios from 'axios'
+import * as fs from 'node:fs/promises'
+import path from 'node:path'
+import { exec } from 'node:child_process'
+import cheerio from 'cheerio'
 
-const execAsync = promisify(exec);
-
-async function findPDFsWithGraphs(rootDir) {
-    const pdfFiles = [];
-
-    async function findPDFs(dir) {
-        const files = await fs.readdir(dir);
-        const statPromises = files.map(async file => {
-            const filePath = path.join(dir, file);
-            const stat = await fs.stat(filePath);
-            if (stat.isDirectory()) {
-                await findPDFs(filePath);
-            } else if (stat.isFile() && file.endsWith('.pdf') && file.includes('graph')) {
-                pdfFiles.push(filePath);
-            }
-        });
-        await Promise.all(statPromises);
+// https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011
+// https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011/
+// https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011/download
+// https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011/download/
+// to
+// https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011/download
+function addDownloadPath(url) {
+  if (!url.endsWith('/download')) {
+    if (!url.endsWith('/')) {
+      url += '/'
     }
-
-    await findPDFs(rootDir);
-    return pdfFiles;
+    url += 'download'
+  }
+  return url
 }
 
-async function extractImages(pdfFilePath) {
-    const folderName = pdfFilePath.replace('.pdf', '');
-    const outputPath = path.join(folderName, '%d.jpg');
+async function getIndexPageLinks(courseUrl) {
+    const response = await axios.get(courseUrl)
+    const indexPage$ = cheerio.load(response.data)
+
+    console.log(
+      indexPage$('.resource-list').map((_i, x$) => {
+        console.log(x$)
+        return [
+          x$.find('h4').text(),
+          x$.find('span[text="See all"]').parent.attr('href'),
+          x$.find('.resource-list-item').map((x$) => {
+            const link$ = x$.find('a[aria-label="Download file"]')
+            const linkWithName$ = x$.find('a.resource-list-title')
+            return [link$.attr('href'), linkWithName$.text()]
+          })
+        ]
+      })
+    )
+
+    const videoLinks = []
+
+    indexPage$('a[aria-label="Download file"]').each((index, element) => {
+        const videoLink = $(element).attr('href')
+        videoLinks.push(videoLink)
+    })
+
+    return videoLinks
+}
+
+async function getVideoLinks(courseUrl) {
+    const response = await axios.get(courseUrl)
+    const indexPage$ = cheerio.load(response.data)
+    const videoLinks = []
+
+    indexPage$('a[aria-label="Download file"]').each((index, element) => {
+        const videoLink = $(element).attr('href')
+        videoLinks.push(videoLink)
+    })
+
+    return videoLinks
+}
+
+async function downloadVideo(videoUrl, downloadPath) {
+    const videoFilename = videoUrl.split('/').pop()
+    const videoPath = path.join(downloadPath, videoFilename)
 
     try {
-        await fs.mkdir(folderName);
-    } catch (err) {
-        if (err.code !== 'EEXIST') {
-            console.error('Error creating directory:', err);
-            return;
-        }
-    }
+        const response = await axios({
+            method: 'get',
+            url: videoUrl,
+            responseType: 'stream',
+        })
 
-    try {
-        await execAsync(`pdftoppm -jpeg "${pdfFilePath}" "${outputPath}"`);
-        // await execAsync(`pdfimages -all "${pdfFilePath}" "${outputPath}"`);
-        console.log('Images extracted:', pdfFilePath);
-    } catch (err) {
-        console.error('Error extracting images:', err);
+        const writer = fs.createWriteStream(videoPath)
+        response.data.pipe(writer)
+
+        return new Promise((resolve, reject) => {
+            writer.on('finish', resolve)
+            writer.on('error', reject)
+        })
+    } catch (error) {
+        console.error('Error downloading video:', error)
     }
 }
 
 async function main() {
-    if (process.argv.length !== 3) {
-        console.error('Usage: node find-pdfs-convert-images.js <rootDirectory>');
-        process.exit(1);
+    if (process.argv.length !== 4) {
+        console.error('Usage: download-course.js <courseUrl> <downloadPath>')
+        process.exit(1)
     }
 
-    const rootDirectory = path.resolve(process.argv[2]);
-    const pdfFilesWithGraphs = await findPDFsWithGraphs(rootDirectory);
+    const courseUrl = addDownloadPath(process.argv[2])
+    const downloadPath = path.resolve(process.argv[3])
 
-    const extractPromises = pdfFilesWithGraphs.map(pdfFile => extractImages(pdfFile));
-    await Promise.all(extractPromises);
+    try {
+        const page = await getIndexPageLinks(courseUrl)
+        const videoLinks = await getVideoLinks(courseUrl)
+        console.log('Found', videoLinks.length, 'videos to download.')
+
+        for (const videoLink of videoLinks) {
+            console.log('Downloading video:', videoLink)
+            await downloadVideo(videoLink, downloadPath)
+            console.log('Downloaded video:', videoLink)
+        }
+    } catch (error) {
+        console.error('Error:', error)
+    }
 }
 
-main().catch(err => console.error('Error:', err));
+main()

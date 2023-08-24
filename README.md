@@ -1,3 +1,7 @@
+```
+nix develop
+spago run --node-args "--link https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011/download/"
+```
 
 # MIT-OCW Downloader
 
@@ -24,9 +28,9 @@ Download all video lectures from a MIT-OCW course with a single command.
   *[mit-ocw-dl][1] only supports video content of the course presently
   but attempts are on to make it download entire contents (lecture slides, assignments, solutions etc.)
 
-## Bugs Reporting and Contribution  
+## Bugs Reporting and Contribution
   Shoot a mail at meetshah1995@gmail.com
-  
+
 ##Author
   [Meet Shah][2]
 
