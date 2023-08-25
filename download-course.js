@@ -8,6 +8,7 @@
 // import { exec } from 'node:child_process'
 // import * as util from 'node:util'
 // import { JSDOM } from 'jsdom'
+// import PQueue from 'p-queue'
 
 var axios = require('axios')
 var fsPromises = require('node:fs/promises')
@@ -18,8 +19,9 @@ var util = require('node:util')
 var { JSDOM } = require('jsdom')
 var { mkdirp } = require('mkdirp')
 var AdmZip = require('adm-zip')
-const { DownloaderHelper } = require('node-downloader-helper');
-
+var { DownloaderHelper } = require('node-downloader-helper')
+var { default: PQueue } = await import("p-queue")
+var cliProgress = require('cli-progress')
 
 // https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011
 // https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011/
@@ -45,8 +47,8 @@ async function getPageDocument_fromUrl(url) {
 }
 
 async function getPageDocument_fromFile(filepath) {
-  const htmlContent = await fsPromises.readFile(filepath, 'utf-8');
-  const dom = new JSDOM(htmlContent);
+  const htmlContent = await fsPromises.readFile(filepath, 'utf-8')
+  const dom = new JSDOM(htmlContent)
   var document = dom.window.document
   return document
 }
@@ -143,17 +145,14 @@ async function downloadZip(courseUrl, cachePath) {
   async function downloadZipFile(zipUrl, downloadedZipPath) {
     const response = await axios.get(zipUrl, { responseType: 'stream' })
     const outputStream = fs.createWriteStream(downloadedZipPath)
-
     response.data.pipe(outputStream)
-
     return new Promise((resolve, reject) => {
       outputStream.on('finish', resolve)
       outputStream.on('error', reject)
     })
   }
 
-  var indexPage = await getPageDocument_fromUrl(courseUrl)
-
+  var indexPage = await getPageDocument_fromUrl(path.join(courseUrl, '/download'))
   var zipUrl = anchorElement_absoluteHref(indexPage.querySelector('.download-course-button'))
   var zipFilenameWithExt = path.basename(zipUrl)
   var { name: zipFilenameWithoutExt } = path.parse(zipFilenameWithExt)
@@ -231,21 +230,21 @@ async function getIndexPageLinks(courseUrlOrExtractPath) {
 
 async function getExpectedSize(videoUrl) {
   // try {
-  const response = await axios.head(videoUrl);
-  return parseInt(response.headers['content-length']);
+  const response = await axios.head(videoUrl)
+  return parseInt(response.headers['content-length'])
   // } catch (error) {
-  //   console.error('Error getting expected size:', error);
-  //   return null;
+  //   console.error('Error getting expected size:', error)
+  //   return null
   // }
 }
 
 async function isVideoDownloadedAndMatchesSize(videoDownloadPath, link) {
   var expectedSize = await getExpectedSize(link)
   // if (expectedSize === null) {
-  //   throw new Error(`Could not get expected size for video: ${videoUrl}`);
+  //   throw new Error(`Could not get expected size for video: ${videoUrl}`)
   // }
-  const stats = await fsPromises.stat(videoPath);
-  return stats.isFile() && stats.size === expectedSize;
+  const stats = await fsPromises.stat(videoPath)
+  return stats.isFile() && stats.size === expectedSize
 }
 
 async function downloadVideo({ videoDownloadDirPath, link, name, filename }) {
@@ -253,48 +252,26 @@ async function downloadVideo({ videoDownloadDirPath, link, name, filename }) {
   // var name = 'Lecture 26: Healthcare Economics'
   // var filename = 'Lecture 26: Healthcare Economics.mp4'
   // var videoDownloadDirPath = '/home/srghma/Desktop/14-01sc-principles-of-microeconomics-fall-2011/Lecture Videos'
+  var videoDownloadPath = path.join(videoDownloadDirPath, filename)
 
-  // Create a new instance of DownloaderHelper
-  const dl = new DownloaderHelper(link, videoDownloadDirPath, {
-    fileName: filename,
-    resumeIfFileExists: true,
-  });
-
-  // Listen for events
-  dl.on('end', () => console.log('Download Completed'));
-  dl.on('error', (err) => console.error('Download Failed', err));
-  dl.on('progress', (stats) => {
-      console.log(`Downloaded: ${stats.downloaded} bytes / ${stats.total} bytes (${stats.progress}%)`);
-  });
-
-  // Start the download
-  dl.start().catch(err => console.error(err));
-
-  console.log('Downloading video:', { link, name, filename })
-  await downloadVideo({ videoDownloadDirPath, link, name, filename })
-  console.log('Downloaded video:', { link, name, filename })
-
-  var isDownloaded = await fsPromises.access(videoDownloadPath).then(() => true).catch(() => false)
-  var isVideoDownloadedAndMatchesSize_ = isDownloaded ? await isVideoDownloadedAndMatchesSize(videoDownloadPath, link) : false
-
-  // Check if the ZIP file has already been downloaded
-
-  if (!isVideoDownloadedAndMatchesSize_ && isDownloaded) {
-    await fsPromises.unlink(videoDownloadPath); // Remove the file
-  }
-
-  var response = await axios({
-    method: 'get',
-    url: link,
-    responseType: 'stream',
-  })
-
-  var writer = fs.createWriteStream(videoDownloadPath)
-  response.data.pipe(writer)
+  // var isDownloaded = await fsPromises.access(videoDownloadPath).then(() => true).catch(() => false)
+  // var isVideoDownloadedAndMatchesSize_ = isDownloaded ? await isVideoDownloadedAndMatchesSize(videoDownloadPath, link) : false
+  // if (!isVideoDownloadedAndMatchesSize_ && isDownloaded) {
+  //   await fsPromises.unlink(videoDownloadPath) // Remove the file
+  // }
 
   return new Promise((resolve, reject) => {
-    writer.on('finish', resolve)
-    writer.on('error', reject)
+    const dl = new DownloaderHelper(link, videoDownloadDirPath, {
+      fileName: filename,
+      resumeIfFileExists: true,
+    })
+
+    dl.on('end', resolve)
+    dl.on('error', reject)
+    dl.on('progress', (stats) => {
+      console.log(`Downloaded ${videoDownloadPath}: ${stats.downloaded} bytes / ${stats.total} bytes (${stats.progress}%)`)
+    })
+    dl.start().catch(reject)
   })
 }
 
@@ -314,28 +291,46 @@ async function main() {
   // var downloadPath = path.resolve(process.argv[3])
   // var downloadPath = path.resolve(process.argv[4])
 
-  try {
-    var extractPath = await downloadZip(courseUrl, cachePath)
-    // var courseUrlOrExtractPath = courseUrl
-    var courseUrlOrExtractPath = extractPath
+  var extractPath = await downloadZip(courseUrl, cachePath)
+  // var courseUrlOrExtractPath = courseUrl
+  var courseUrlOrExtractPath = extractPath
 
-    var resourceList_ = await getIndexPageLinks(courseUrlOrExtractPath)
-    console.log('Found', resourceList_.length, 'dirs to create.')
+  var resourceList_ = await getIndexPageLinks(courseUrlOrExtractPath)
+  console.log('Found', resourceList_.length, 'dirs to create.')
 
-    for (var resource of resourceList_) {
-      resource = resourceList_[0]
-      var { heading, resourceListItems } = resource
-      var videoDownloadDirPath = path.join(downloadPath, heading)
-      await mkdirp(videoDownloadDirPath)
-      for (var resourceListItem of resourceListItems) {
-        var { link, name, filename } = resourceListItem
-        console.log('Downloading video:', { link, name, filename })
-        await downloadVideo({ videoDownloadDirPath, link, name, filename })
-        console.log('Downloaded video:', { link, name, filename })
-      }
-    }
-  } catch (error) {
-    console.error('Error:', error)
+  for (var resource of resourceList_) {
+    resource = resourceList_[0]
+    var { heading, resourceListItems } = resource
+    var videoDownloadDirPath = path.join(downloadPath, heading)
+    // await fsPromises.unlink(videoDownloadDirPath)
+    await mkdirp(videoDownloadDirPath)
+    var queue = new PQueue({ concurrency: 10 })
+
+    // // create new container
+    // const multibar = new cliProgress.MultiBar({
+    //     clearOnComplete: false,
+    //     hideCursor: true,
+    //     format: ' {bar} | {filename} | {value}/{total}',
+    // }, cliProgress.Presets.shades_grey)
+
+    // // add bars
+    // const b1 = multibar.create(200, 0)
+    // const b2 = multibar.create(1000, 0)
+
+    // // control bars
+    // b2.update(20, {filename: "test1.txt"})
+    // b1.update(20, {filename: "helloworld.txt"})
+
+    // // stop all bars
+    // multibar.stop()
+
+    var promises = resourceListItems.map(resourceListItem => async () => {
+      var { link, name, filename } = resourceListItem
+      console.log('Downloading video:', { link, name, filename })
+      await downloadVideo({ videoDownloadDirPath, link, name, filename })
+      console.log('Downloaded video:', { link, name, filename })
+    })
+    await queue.addAll(promises)
   }
 }
 
