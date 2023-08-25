@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // ./download-course.js https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011 /home/srghma/Desktop/14-01sc-principles-of-microeconomics-fall-2011/ /home/srghma/Desktop/ocw.tmp/
 
-// coursename="14-03-microeconomic-theory-and-public-policy-fall-2016"
-// ./download-course.js "https://ocw.mit.edu/courses/$coursename" "$HOME/Desktop/$coursename" "$HOME/Desktop/ocw.tmp/"
+// coursename="14-772-development-economics-macroeconomics-spring-2013" && ./download-course.js "https://ocw.mit.edu/courses/$coursename" "$HOME/Desktop/$coursename" "$HOME/Desktop/ocw.tmp/"
 // ./find-pdfs-convert-images.js "$HOME/Desktop/$coursename"
 
 // "type": "module",
@@ -19,7 +18,14 @@ import { DownloaderHelper } from 'node-downloader-helper'
 import PQueue from 'p-queue'
 import cliProgress from 'cli-progress'
 import sanitize from "sanitize-filename"
+import deepEqual from "deep-equal"
+import jsondiffpatch from "jsondiffpatch"
 
+// function isInNodeREPL() {
+//   return typeof require !== 'undefined' && require('util')._getReplInputSource() !== undefined;
+// }
+
+// var deepEqual = require('deep-equal');
 // var axios = require('axios')
 // var fsPromises = require('node:fs/promises')
 // var fs = require('node:fs')
@@ -81,25 +87,36 @@ function anchorElement_absoluteHref(element) {
 }
 
 function getResourceListItems({ element, downloadModeIsFromCache, extractPath, courseUrl }) {
-  var resourceListItems = Array.from(element.querySelectorAll('.resource-list-item')).map(item => {
+  var resourceListItems = Array.from(element.querySelectorAll('.resource-list-item'))
+
+  resourceListItems = resourceListItems.map(item => {
+    // console.log(item.innerHTML)
     var link = item.querySelector('a[aria-label="Download file"]')
+    if (!link) { return null }
+    // console.log(link)
     var linkWithName = item.querySelector('a.resource-list-title')
+    var textName = linkWithName.textContent.trim()
+    // console.log(linkWithName)
 
     var linkHref = null
 
-    try {
-      linkHref = anchorElement_absoluteHref(link).trim()
-    } catch (e) {
-      // TypeError: Invalid URL: ./static_resources/ocw_1404_finalreview_2020dec08_360p_16_9.mp4
-      linkHref = link.getAttribute('href').trim()
-      var isVideo = linkHref.endsWith('.mp4')
-      if (isVideo) {
-        var url = new URL(linkHref, courseUrl + '/download')
-        console.log(`url.toString()`, url.toString())
-        linkHref = url.toString()
-      } else {
-        linkHref = path.join(extractPath, linkHref)
+    if (downloadModeIsFromCache) {
+      try {
+        linkHref = anchorElement_absoluteHref(link).trim()
+      } catch (e) {
+        // TypeError: Invalid URL: ./static_resources/ocw_1404_finalreview_2020dec08_360p_16_9.mp4
+        linkHref = link.getAttribute('href').trim()
+        var isVideo = linkHref.endsWith('.mp4')
+        if (isVideo) {
+          var url = new URL(linkHref, courseUrl + '/download')
+          console.log(`url.toString()`, url.toString())
+          linkHref = url.toString()
+        } else {
+          linkHref = path.join(extractPath, linkHref)
+        }
       }
+    } else {
+      linkHref = anchorElement_absoluteHref(link).trim()
     }
     // var isLocalPath = !linkHref.startsWith('http')
 
@@ -111,9 +128,10 @@ function getResourceListItems({ element, downloadModeIsFromCache, extractPath, c
     return {
       // link: isLocalPath && !isVideo ? path.join(courseUrlOrExtractPath, linkHref) : linkHref,
       link: linkHref,
-      textName: linkWithName.textContent.trim(),
+      textName,
     }
-  })
+  }).filter(x => x)
+
   return resourceListItems
 }
 
@@ -249,7 +267,6 @@ async function downloadZip(courseUrl, cachePath) {
   } catch (err) {
     console.error('Error:', err)
   }
-
   return extractPath
 }
 
@@ -266,7 +283,10 @@ async function getIndexPageLinks({ downloadModeIsFromCache, extractPath, courseU
   var indexPage = downloadModeIsFromCache ? await getPageDocument_fromFile(indexPagePathOrUrl) : await getPageDocument_fromUrl(indexPagePathOrUrl)
 
   // console.log(indexPage.innerHTML)
-  var resourceList = Array.from(indexPage.querySelectorAll('.resource-list')).filter(x => x.innerHTML.trim().length > 0).map(resource => {
+  var resourceList = Array.from(indexPage.querySelectorAll('.resource-list')).filter(x => x.innerHTML.trim().length > 0)
+
+  resourceList = resourceList.map(resource => {
+    // resource = resourceList[0]
     var heading = resource.querySelector('h4').textContent
     var seeAllLink = resource.querySelector('.float-right a')
     var seeAllLinkHref = seeAllLink ? (downloadModeIsFromCache ? seeAllLink.href : anchorElement_absoluteHref(seeAllLink)) : null
@@ -341,12 +361,12 @@ async function downloadResource_remote({ downloadHereDirPath, link, textName, fi
   // var downloadHerePath = path.join(downloadHereDirPath, filename)
   const dl = new DownloaderHelper(link, downloadHereDirPath, {
     fileName: filename,
-    resumeOnIncomplete: true, // will append (1).mp4
-    resumeIfFileExists: true, // will append (1).mp4
+    resumeOnIncomplete: true,
+    resumeIfFileExists: true, // will not append (1).mp4
     override: { skip: true, skipSmaller: false },
     // removeOnStop: false, // remove the file when is stopped (default:true)
     removeOnFail: true, // remove the file when fail (default:true)
-    retry: { maxRetries: 3, delay: 3000 }, // { maxRetries: number, delay: number in ms } or false to disable (default)
+    retry: { maxRetries: 8, delay: 3000 }, // { maxRetries: number, delay: number in ms } or false to disable (default)
   })
   dl.on('skip', onSkip)
   dl.on('download', onDownload)
@@ -360,13 +380,12 @@ async function main() {
     process.exit(1)
   }
 
-  var courseName = "14-04-intermediate-microeconomic-theory-fall-2020"
+  var courseName = "14-772-development-economics-macroeconomics-spring-2013"
   var courseUrl = process.argv[2] || `https://ocw.mit.edu/courses/${courseName}`
   var downloadPath = path.resolve(process.argv[3] || path.join(os.homedir(), "Desktop", courseName))
   var cachePath = path.resolve(process.argv[4] || path.join(os.homedir(), "Desktop", "ocw.tmp"))
 
   console.log({
-    courseName,
     courseUrl,
     downloadPath,
     cachePath,
@@ -383,7 +402,14 @@ async function main() {
   console.log(util.inspect(resourceList_courseUrl, { depth: null, colors: true }))
   console.log(util.inspect(resourceList_extractPath, { depth: null, colors: true }))
 
+  if (!deepEqual(resourceList_courseUrl, resourceList_extractPath)) {
+    var delta = jsondiffpatch.diff(resourceList_courseUrl, resourceList_extractPath)
+    var output = jsondiffpatch.formatters.console.format(delta)
+    console.log(output)
+  }
+
   var resourceList_ = resourceList_extractPath
+  // var resourceList_ = resourceList_courseUrl
   console.log('Found', resourceList_.length, 'dirs to create.')
 
   const multibar = new cliProgress.MultiBar({
@@ -392,47 +418,54 @@ async function main() {
     format: ' {bar} | {filename} | {value}/{total}',
   }, cliProgress.Presets.shades_grey)
 
-  for (var resource of resourceList_) {
-    var { heading, resourceListItems } = resource
-    var downloadHereDirPath = path.join(downloadPath, heading)
-    // await fsPromises.unlink(downloadHereDirPath)
-    await mkdirp(downloadHereDirPath)
-    var queue = new PQueue({ concurrency: 10 })
-    var promises = resourceListItems.map(resourceListItem => async () => {
-      var { link, textName, filename } = resourceListItem
+  try {
+    for (var resource of resourceList_) {
+      var { heading, resourceListItems } = resource
+      var downloadHereDirPath = path.join(downloadPath, heading)
+      // await fsPromises.unlink(downloadHereDirPath)
+      await mkdirp(downloadHereDirPath)
+      var queue = new PQueue({ concurrency: 10 })
+      var promises = resourceListItems.map(resourceListItem => async () => {
+        var { link, textName, filename } = resourceListItem
 
-      if (link.endsWith('.mp4')) {
-        // Error: Want to copy file /home/srghma/Desktop/ocw.tmp/14.04-fall-2020/static_resources/ocw_1404_finalreview_2020dec08_360p_16_9.mp4 to /home/srghma/Desktop/14-04-intermediate-microeconomic-theory-fall-2020/Lecture Videos/Final Exam Review for Intermediate Microeconomic Theory.mp4, but it doesnt exists
-      }
+        if (link.endsWith('.mp4')) {
+          // Error: Want to copy file /home/srghma/Desktop/ocw.tmp/14.04-fall-2020/static_resources/ocw_1404_finalreview_2020dec08_360p_16_9.mp4 to /home/srghma/Desktop/14-04-intermediate-microeconomic-theory-fall-2020/Lecture Videos/Final Exam Review for Intermediate Microeconomic Theory.mp4, but it doesnt exists
+        }
 
-      var downloadHerePath = path.join(downloadHereDirPath, filename)
-      var isLocalPath = !link.startsWith('http')
+        var downloadHerePath = path.join(downloadHereDirPath, filename)
+        var isLocalPath = !link.startsWith('http')
 
-      if (isLocalPath) {
-        var result = await downloadResource_local({ downloadHerePath, link })
-        if (result === 'already_exists') { multibar.log(`Skipped ${link} to ${downloadHerePath}`) }
-        if (result === 'copied')         { multibar.log(`Copied ${link} to ${downloadHerePath}`) }
-      } else {
-        const progressBar = multibar.create(100, 0, { filename })
-        // console.log('Downloading myres:', { link, textName, filename })
-        await downloadResource_remote({
-          downloadHereDirPath,
-          link,
-          textName,
-          filename,
-          onSkip:              () => { multibar.log(`Skip ${filename}`) },
-          onDownload:          () => { progressBar.start(100, 0) },
-          onProgressThrottled: stats => { progressBar.update(stats.progress, { filename }) }
-          // console.log(`Downloaded ${myresDownloadPath}: ${stats.downloaded} bytes / ${stats.total} bytes (${stats.progress}%)`)
-        })
-        // console.log('Downloaded myres:', { link, textName, filename })
-      }
-    })
-    await queue.addAll(promises)
+        if (isLocalPath) {
+          var result = await downloadResource_local({ downloadHerePath, link })
+          if (result === 'already_exists') { multibar.log(`Skipped ${link} to ${downloadHerePath}`) }
+          if (result === 'copied')         { multibar.log(`Copied ${link} to ${downloadHerePath}`) }
+        } else {
+          const progressBar = multibar.create(100, 0, { filename })
+          // console.log('Downloading myres:', { link, textName, filename })
+          try {
+            await downloadResource_remote({
+              downloadHereDirPath,
+              link,
+              textName,
+              filename,
+              onSkip:              () => { multibar.log(`Skip ${filename}`) },
+              onDownload:          () => { progressBar.start(100, 0) },
+              onProgressThrottled: stats => { progressBar.update(stats.progress, { filename }) }
+              // console.log(`Downloaded ${myresDownloadPath}: ${stats.downloaded} bytes / ${stats.total} bytes (${stats.progress}%)`)
+            })
+          } catch (e) {
+            console.error(e)
+          }
+          progressBar.stop()
+          // console.log('Downloaded myres:', { link, textName, filename })
+        }
+      })
+      await queue.addAll(promises)
+    }
+    // find ~/Desktop/14-01sc-principles-of-microeconomics-fall-2011/ -type f -name '*)\.mp4' -delete
+  } finally {
+    multibar.stop()
   }
-  // find ~/Desktop/14-01sc-principles-of-microeconomics-fall-2011/ -type f -name '*)\.mp4' -delete
-
-  multibar.stop()
 }
 
 main()
