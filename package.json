@@ -20,6 +20,7 @@
     "jsdom": "^22.1.0",
     "mkdirp": "^3.0.1",
     "node-downloader-helper": "^2.1.9",
-    "p-queue": "^7.3.4"
+    "p-queue": "^7.3.4",
+    "sanitize-filename": "^1.6.3"
   }
 }
