@@ -10,13 +10,15 @@
 // import { JSDOM } from 'jsdom'
 
 var axios = require('axios')
-var fs = require('node:fs/promises')
+var fsPromises = require('node:fs/promises')
+var fs = require('node:fs')
 var path = require('node:path')
 var { exec } = require('node:child_process')
 var util = require('node:util')
 var { JSDOM } = require('jsdom')
 var { mkdirp } = require('mkdirp')
 var AdmZip = require('adm-zip')
+const { DownloaderHelper } = require('node-downloader-helper');
 
 
 // https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011
@@ -43,7 +45,7 @@ async function getPageDocument_fromUrl(url) {
 }
 
 async function getPageDocument_fromFile(filepath) {
-  const htmlContent = await fs.readFile(filepath, 'utf-8');
+  const htmlContent = await fsPromises.readFile(filepath, 'utf-8');
   const dom = new JSDOM(htmlContent);
   var document = dom.window.document
   return document
@@ -60,13 +62,15 @@ function anchorElement_absoluteHref(element) {
   return url.toString()
 }
 
-function getResourceListItems(document) {
+function getResourceListItems(document, courseUrlOrExtractPath) {
   var resourceListItems = Array.from(document.querySelectorAll('.resource-list-item')).map(item => {
     var link = item.querySelector('a[aria-label="Download file"]')
     var linkWithName = item.querySelector('a.resource-list-title')
+    var linkHref = link.getAttribute('href').trim()
+    var isLocalPath = !linkHref.startsWith('http')
     return {
-      link: link.getAttribute('href'),
-      name: linkWithName.textContent,
+      link: isLocalPath ? path.join(courseUrlOrExtractPath, linkHref) : linkHref,
+      name: linkWithName.textContent.trim(),
     }
   })
   return resourceListItems
@@ -158,7 +162,7 @@ async function downloadZip(courseUrl, cachePath) {
 
   try {
     // Check if the ZIP file has already been downloaded
-    var isDownloaded = await fs.access(downloadedZipPath).then(() => true).catch(() => false)
+    var isDownloaded = await fsPromises.access(downloadedZipPath).then(() => true).catch(() => false)
 
     if (!isDownloaded) {
       // Download the ZIP file
@@ -166,7 +170,7 @@ async function downloadZip(courseUrl, cachePath) {
       console.log('ZIP file downloaded:', zipUrl, 'to', downloadedZipPath)
     }
 
-    var isExtracted = await fs.access(extractPath).then(() => true).catch(() => false)
+    var isExtracted = await fsPromises.access(extractPath).then(() => true).catch(() => false)
 
     if (!isExtracted) {
       // Extract the ZIP contents
@@ -181,15 +185,16 @@ async function downloadZip(courseUrl, cachePath) {
   return extractPath
 }
 
-async function getIndexPageLinks(courseUrl) {
-  var indexPage = await getPageDocument_fromUrl(courseUrl)
+async function getIndexPageLinks(courseUrlOrExtractPath) {
+  var isLocalPath = !courseUrlOrExtractPath.startsWith('http')
+  var indexPagePathOrUrl = isLocalPath ? path.join(courseUrlOrExtractPath, '/download/index.html') : await addDownloadPath(courseUrlOrExtractPath, '/download')
+  var indexPage = isLocalPath ? await getPageDocument_fromFile(indexPagePathOrUrl) : await getPageDocument_fromUrl(indexPagePathOrUrl)
 
   var resourceList = Array.from(indexPage.querySelectorAll('.resource-list')).map(resource => {
     var heading = resource.querySelector('h4').textContent
     var seeAllLink = resource.querySelector('.float-right a')
-    var seeAllLinkHref = seeAllLink ? anchorElement_absoluteHref(seeAllLink) : null
-    var resourceListItems = getResourceListItems(resource)
-
+    var seeAllLinkHref = seeAllLink ? (isLocalPath ? seeAllLink.href : anchorElement_absoluteHref(seeAllLink)) : null
+    var resourceListItems = getResourceListItems(resource, courseUrlOrExtractPath)
     return {
       heading,
       seeAllLinkHref,
@@ -199,12 +204,12 @@ async function getIndexPageLinks(courseUrl) {
 
   resourceList = await Promise.all(resourceList.map(async (resource) => {
     if (!resource.seeAllLinkHref) { return resource }
-    var page = await getPageDocument_fromUrl(resource.seeAllLinkHref)
-    var resourceListItems_new = getResourceListItems(page)
+    var page = isLocalPath ? await getPageDocument_fromFile(path.join(courseUrlOrExtractPath, 'download', resource.seeAllLinkHref, 'index.html')) : await getPageDocument_fromUrl(resource.seeAllLinkHref)
+    var resourceListItems_new = getResourceListItems(page, courseUrlOrExtractPath)
     return { ...resource, resourceListItems_new }
   }))
 
-  // console.log(util.inspect(resourceList, { depth: null, colors: true }))
+  console.log(util.inspect(resourceList, { depth: null, colors: true }))
 
   var resourceList_ = resourceList.map(resource => {
     var heading = resource.heading
@@ -224,27 +229,73 @@ async function getIndexPageLinks(courseUrl) {
   return resourceList_
 }
 
-async function downloadVideo(videoUrl, downloadPath) {
-  var videoFilename = videoUrl.split('/').pop()
-  var videoPath = path.join(downloadPath, videoFilename)
+async function getExpectedSize(videoUrl) {
+  // try {
+  const response = await axios.head(videoUrl);
+  return parseInt(response.headers['content-length']);
+  // } catch (error) {
+  //   console.error('Error getting expected size:', error);
+  //   return null;
+  // }
+}
 
-  try {
-    var response = await axios({
-      method: 'get',
-      url: videoUrl,
-      responseType: 'stream',
-    })
+async function isVideoDownloadedAndMatchesSize(videoDownloadPath, link) {
+  var expectedSize = await getExpectedSize(link)
+  // if (expectedSize === null) {
+  //   throw new Error(`Could not get expected size for video: ${videoUrl}`);
+  // }
+  const stats = await fsPromises.stat(videoPath);
+  return stats.isFile() && stats.size === expectedSize;
+}
 
-    var writer = fs.createWriteStream(videoPath)
-    response.data.pipe(writer)
+async function downloadVideo({ videoDownloadDirPath, link, name, filename }) {
+  // var link = 'http://www.archive.org/download/MIT14.01SCF10/MIT14_01SCF10_lec26_300k.mp4'
+  // var name = 'Lecture 26: Healthcare Economics'
+  // var filename = 'Lecture 26: Healthcare Economics.mp4'
+  // var videoDownloadDirPath = '/home/srghma/Desktop/14-01sc-principles-of-microeconomics-fall-2011/Lecture Videos'
 
-    return new Promise((resolve, reject) => {
-      writer.on('finish', resolve)
-      writer.on('error', reject)
-    })
-  } catch (error) {
-    console.error('Error downloading video:', error)
+  // Create a new instance of DownloaderHelper
+  const dl = new DownloaderHelper(link, videoDownloadDirPath, {
+    fileName: filename,
+    resumeIfFileExists: true,
+  });
+
+  // Listen for events
+  dl.on('end', () => console.log('Download Completed'));
+  dl.on('error', (err) => console.error('Download Failed', err));
+  dl.on('progress', (stats) => {
+      console.log(`Downloaded: ${stats.downloaded} bytes / ${stats.total} bytes (${stats.progress}%)`);
+  });
+
+  // Start the download
+  dl.start().catch(err => console.error(err));
+
+  console.log('Downloading video:', { link, name, filename })
+  await downloadVideo({ videoDownloadDirPath, link, name, filename })
+  console.log('Downloaded video:', { link, name, filename })
+
+  var isDownloaded = await fsPromises.access(videoDownloadPath).then(() => true).catch(() => false)
+  var isVideoDownloadedAndMatchesSize_ = isDownloaded ? await isVideoDownloadedAndMatchesSize(videoDownloadPath, link) : false
+
+  // Check if the ZIP file has already been downloaded
+
+  if (!isVideoDownloadedAndMatchesSize_ && isDownloaded) {
+    await fsPromises.unlink(videoDownloadPath); // Remove the file
   }
+
+  var response = await axios({
+    method: 'get',
+    url: link,
+    responseType: 'stream',
+  })
+
+  var writer = fs.createWriteStream(videoDownloadPath)
+  response.data.pipe(writer)
+
+  return new Promise((resolve, reject) => {
+    writer.on('finish', resolve)
+    writer.on('error', reject)
+  })
 }
 
 async function main() {
@@ -253,7 +304,7 @@ async function main() {
     process.exit(1)
   }
 
-  var courseUrl = addDownloadPath("https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011")
+  var courseUrl = "https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011"
   var downloadPath = path.resolve("/home/srghma/Desktop/14-01sc-principles-of-microeconomics-fall-2011/")
   var cachePath = path.resolve("/home/srghma/Desktop/ocw.tmp/")
 
@@ -265,17 +316,23 @@ async function main() {
 
   try {
     var extractPath = await downloadZip(courseUrl, cachePath)
-    var courseUrl_local = path.join(extractPath, '/download/index.html')
+    // var courseUrlOrExtractPath = courseUrl
+    var courseUrlOrExtractPath = extractPath
 
-    var resourceList_ = await getIndexPageLinks(courseUrl, true)
+    var resourceList_ = await getIndexPageLinks(courseUrlOrExtractPath)
     console.log('Found', resourceList_.length, 'dirs to create.')
 
     for (var resource of resourceList_) {
+      resource = resourceList_[0]
       var { heading, resourceListItems } = resource
-      await mkdirp(path.join(downloadPath, heading))
-      console.log('Downloading video:', videoLink)
-      await downloadVideo(videoLink, downloadPath)
-      console.log('Downloaded video:', videoLink)
+      var videoDownloadDirPath = path.join(downloadPath, heading)
+      await mkdirp(videoDownloadDirPath)
+      for (var resourceListItem of resourceListItems) {
+        var { link, name, filename } = resourceListItem
+        console.log('Downloading video:', { link, name, filename })
+        await downloadVideo({ videoDownloadDirPath, link, name, filename })
+        console.log('Downloaded video:', { link, name, filename })
+      }
     }
   } catch (error) {
     console.error('Error:', error)
