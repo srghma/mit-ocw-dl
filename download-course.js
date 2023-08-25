@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // ./download-course.js https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011 /home/srghma/Desktop/14-01sc-principles-of-microeconomics-fall-2011/ /home/srghma/Desktop/ocw.tmp/
 
+// find ~/Desktop/14-01sc-principles-of-microeconomics-fall-2011/ -type f -name '*)\.mp4' -delete
+
 // coursename="14-772-development-economics-macroeconomics-spring-2013" && ./download-course.js "https://ocw.mit.edu/courses/$coursename" "$HOME/Desktop/$coursename" "$HOME/Desktop/ocw.tmp/"
 // ./find-pdfs-convert-images.js "$HOME/Desktop/$coursename"
 
@@ -462,7 +464,6 @@ async function main() {
       })
       await queue.addAll(promises)
     }
-    // find ~/Desktop/14-01sc-principles-of-microeconomics-fall-2011/ -type f -name '*)\.mp4' -delete
   } finally {
     multibar.stop()
   }
