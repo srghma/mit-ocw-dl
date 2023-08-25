@@ -15,7 +15,8 @@ var path = require('node:path')
 var { exec } = require('node:child_process')
 var util = require('node:util')
 var { JSDOM } = require('jsdom')
-const mkdirp = require('mkdirp').promises;
+var { mkdirp } = require('mkdirp')
+var AdmZip = require('adm-zip')
 
 
 // https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011
@@ -34,14 +35,21 @@ function addDownloadPath(url) {
   return url
 }
 
-async function getPageDocument(url) {
+async function getPageDocument_fromUrl(url) {
   var response = await axios.get(url)
   var dom = new JSDOM(response.data, { url })
   var document = dom.window.document
   return document
 }
 
-function absoluteUrl(element) {
+async function getPageDocument_fromFile(filepath) {
+  const htmlContent = await fs.readFile(filepath, 'utf-8');
+  const dom = new JSDOM(htmlContent);
+  var document = dom.window.document
+  return document
+}
+
+function anchorElement_absoluteHref(element) {
   var document = element.ownerDocument
   var window = document.defaultView
   var url = new window.URL(element.href, window.location.href)
@@ -84,14 +92,14 @@ function getResourceListItems(document) {
 function outputFileName({ link, name }) {
   // on /courses/14-01sc-principles-of-microeconomics-fall-2011/246785b93665931deee8867a16cfefd9_MIT14_01SCF11_soln01.pdf
   // Uncaught TypeError [ERR_INVALID_URL]: Invalid URL
-  var dummyBaseUrl = 'http://dummy.org'; // A dummy base URL
-  var url = new URL(link, dummyBaseUrl);
-  var url_extname = path.extname(url.pathname);
+  var dummyBaseUrl = 'http://dummy.org' // A dummy base URL
+  var url = new URL(link, dummyBaseUrl)
+  var url_extname = path.extname(url.pathname)
   // if name ends with url_extname - do nothing
   // else - add extname
   // Check if name ends with url_extname
   if (name.endsWith(url_extname)) { return name }
-  return name + url_extname;
+  return name + url_extname
 }
 
 // { link: 'https://my.org/file1', filename: 'outputfile1.mp4' },
@@ -108,32 +116,78 @@ function outputFileName({ link, name }) {
 // { link: 'https://my.org/file4', filename: 'outputfile2 (1).mp4' },
 // { link: 'https://my.org/file5', filename: 'outputfile2 (2).mp4' }
 function findAddIndexIfDuplicateFilename(listOfFilenames) {
-  const filenameMap = new Map();
-  const resultFilenames = [];
-  for (const element of listOfFilenames) {
-    const { filename } = element
+  var filenameMap = new Map()
+  var resultFilenames = []
+  for (var element of listOfFilenames) {
+    var { filename } = element
     if (!filenameMap.has(filename)) {
-      filenameMap.set(filename, 1);
-      resultFilenames.push({ ...element, filename });
+      filenameMap.set(filename, 1)
+      resultFilenames.push({ ...element, filename })
     } else {
-      const index = filenameMap.get(filename);
-      const parsed = path.parse(filename)
-      const newFilename = `${parsed.name} (${index})${parsed.ext}`;
-      filenameMap.set(filename, index + 1);
-      filenameMap.set(newFilename, 1);
-      resultFilenames.push({ ...element, filename: newFilename });
+      var index = filenameMap.get(filename)
+      var parsed = path.parse(filename)
+      var newFilename = `${parsed.name} (${index})${parsed.ext}`
+      filenameMap.set(filename, index + 1)
+      filenameMap.set(newFilename, 1)
+      resultFilenames.push({ ...element, filename: newFilename })
     }
   }
-  return resultFilenames;
+  return resultFilenames
+}
+
+async function downloadZip(courseUrl, cachePath) {
+  async function downloadZipFile(zipUrl, downloadedZipPath) {
+    const response = await axios.get(zipUrl, { responseType: 'stream' })
+    const outputStream = fs.createWriteStream(downloadedZipPath)
+
+    response.data.pipe(outputStream)
+
+    return new Promise((resolve, reject) => {
+      outputStream.on('finish', resolve)
+      outputStream.on('error', reject)
+    })
+  }
+
+  var indexPage = await getPageDocument_fromUrl(courseUrl)
+
+  var zipUrl = anchorElement_absoluteHref(indexPage.querySelector('.download-course-button'))
+  var zipFilenameWithExt = path.basename(zipUrl)
+  var { name: zipFilenameWithoutExt } = path.parse(zipFilenameWithExt)
+  var downloadedZipPath = path.join(cachePath, zipFilenameWithExt)
+  var extractPath = path.join(cachePath, zipFilenameWithoutExt)
+
+  try {
+    // Check if the ZIP file has already been downloaded
+    var isDownloaded = await fs.access(downloadedZipPath).then(() => true).catch(() => false)
+
+    if (!isDownloaded) {
+      // Download the ZIP file
+      await downloadZipFile(zipUrl, downloadedZipPath)
+      console.log('ZIP file downloaded:', zipUrl, 'to', downloadedZipPath)
+    }
+
+    var isExtracted = await fs.access(extractPath).then(() => true).catch(() => false)
+
+    if (!isExtracted) {
+      // Extract the ZIP contents
+      var zip = new AdmZip(downloadedZipPath)
+      zip.extractAllTo(extractPath, true)
+      console.log('ZIP contents extracted:', downloadedZipPath, 'to', extractPath)
+    }
+  } catch (err) {
+    console.error('Error:', err)
+  }
+
+  return extractPath
 }
 
 async function getIndexPageLinks(courseUrl) {
-  var indexPage = await getPageDocument(courseUrl)
+  var indexPage = await getPageDocument_fromUrl(courseUrl)
 
   var resourceList = Array.from(indexPage.querySelectorAll('.resource-list')).map(resource => {
     var heading = resource.querySelector('h4').textContent
     var seeAllLink = resource.querySelector('.float-right a')
-    var seeAllLinkHref = seeAllLink ? absoluteUrl(seeAllLink) : null
+    var seeAllLinkHref = seeAllLink ? anchorElement_absoluteHref(seeAllLink) : null
     var resourceListItems = getResourceListItems(resource)
 
     return {
@@ -145,7 +199,7 @@ async function getIndexPageLinks(courseUrl) {
 
   resourceList = await Promise.all(resourceList.map(async (resource) => {
     if (!resource.seeAllLinkHref) { return resource }
-    var page = await getPageDocument(resource.seeAllLinkHref)
+    var page = await getPageDocument_fromUrl(resource.seeAllLinkHref)
     var resourceListItems_new = getResourceListItems(page)
     return { ...resource, resourceListItems_new }
   }))
@@ -195,23 +249,30 @@ async function downloadVideo(videoUrl, downloadPath) {
 
 async function main() {
   if (process.argv.length !== 4) {
-    console.error('Usage: download-course.js <courseUrl> <downloadPath>')
+    console.error('Usage: download-course.js <courseUrl> <downloadPath> <cachePath>')
     process.exit(1)
   }
 
   var courseUrl = addDownloadPath("https://ocw.mit.edu/courses/14-01sc-principles-of-microeconomics-fall-2011")
   var downloadPath = path.resolve("/home/srghma/Desktop/14-01sc-principles-of-microeconomics-fall-2011/")
+  var cachePath = path.resolve("/home/srghma/Desktop/ocw.tmp/")
+
+  await mkdirp(cachePath)
 
   // var courseUrl = addDownloadPath(process.argv[2])
   // var downloadPath = path.resolve(process.argv[3])
+  // var downloadPath = path.resolve(process.argv[4])
 
   try {
-    var resourceList_ = await getIndexPageLinks(courseUrl)
+    var extractPath = await downloadZip(courseUrl, cachePath)
+    var courseUrl_local = path.join(extractPath, '/download/index.html')
+
+    var resourceList_ = await getIndexPageLinks(courseUrl, true)
     console.log('Found', resourceList_.length, 'dirs to create.')
 
     for (var resource of resourceList_) {
-      const { heading, resourceListItems } = resource
-      await mkdirp(heading)
+      var { heading, resourceListItems } = resource
+      await mkdirp(path.join(downloadPath, heading))
       console.log('Downloading video:', videoLink)
       await downloadVideo(videoLink, downloadPath)
       console.log('Downloaded video:', videoLink)
