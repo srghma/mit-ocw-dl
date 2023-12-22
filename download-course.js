@@ -462,8 +462,9 @@ async function main() {
           // console.log('Downloaded myres:', { link, textName, filename })
         }
       })
-      await queue.addAll(promises)
+      queue.addAll(promises)
     }
+    await queue.onIdle()
   } finally {
     multibar.stop()
   }
